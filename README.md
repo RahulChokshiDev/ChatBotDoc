@@ -2,8 +2,6 @@
 
 A multi-session RAG (Retrieval-Augmented Generation) chatbot that answers questions strictly from uploaded documents. Built with FastAPI, LangChain, Google Gemini, and FAISS.
 
-![DocBot Demo](demo.gif)
-
 ---
 
 ## Features
@@ -214,3 +212,9 @@ return StreamingResponse(stream_answer(), media_type="text/event-stream")
 - The free tier of Google AI Studio has a daily request quota per model
 - FAISS runs in-memory — all sessions are lost on server restart
 - The system prompt explicitly forbids the LLM from using outside knowledge
+
+---
+
+## Demo
+
+![DocBot Demo](demo.gif)
