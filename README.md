@@ -2,6 +2,8 @@
 
 A multi-session RAG (Retrieval-Augmented Generation) chatbot that answers questions strictly from uploaded documents. Built with FastAPI, LangChain, Google Gemini, and FAISS.
 
+![DocBot Demo](demo.gif)
+
 ---
 
 ## Features
