@@ -1,5 +1,7 @@
 # DocBot — Document-Grounded RAG Chatbot
 
+![DocBot Demo](demo.gif)
+
 A multi-session RAG (Retrieval-Augmented Generation) chatbot that answers questions strictly from uploaded documents. Built with FastAPI, LangChain, Google Gemini, and FAISS.
 
 ---
@@ -213,8 +215,3 @@ return StreamingResponse(stream_answer(), media_type="text/event-stream")
 - FAISS runs in-memory — all sessions are lost on server restart
 - The system prompt explicitly forbids the LLM from using outside knowledge
 
----
-
-## Demo
-
-![DocBot Demo](demo.gif)
