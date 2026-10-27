@@ -278,6 +278,19 @@
 
   #typing-row { display:none; }
   #typing-row.is-visible { display:flex; }
+
+  /* ── Model info bar ── */
+  .ds-model-info { padding:var(--space-14) var(--space-20); border-top:1px solid var(--border); }
+  .ds-model-row { display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; }
+  .ds-model-label { font-size:0.72rem; font-weight:400; color:var(--ink-faint); }
+  .ds-model-value { font-size:0.72rem; font-weight:500; color:var(--ink-subtle); }
+  .ds-model-list { display:flex; flex-direction:column; gap:3px; }
+  .ds-model-chip { display:inline-flex; align-items:center; gap:5px; font-size:0.68rem; font-weight:500;
+    padding:3px 8px; border-radius:var(--radius-pill); border:1px solid var(--border-strong);
+    background:var(--surface-raised); color:var(--ink-muted); }
+  .ds-model-chip.is-active { border-color:var(--border-ready); background:var(--surface-ready); color:var(--status-ready-value); }
+  .ds-model-chip-dot { width:6px; height:6px; border-radius:var(--radius-circle); background:var(--border-strong); }
+  .ds-model-chip.is-active .ds-model-chip-dot { background:var(--status-ready-title); }
 </style>
 </head>
 <body>
@@ -364,6 +377,23 @@
     </div>
 
     <div style="flex:1"></div>
+
+    <!-- Model info bar -->
+    <div class="ds-model-info" id="model-info">
+      <div class="ds-section-label section-label" style="margin-bottom:var(--space-8)">Models</div>
+      <div class="ds-model-row">
+        <span class="ds-model-label">LLM</span>
+        <span class="ds-model-value" id="model-llm">—</span>
+      </div>
+      <div class="ds-model-row">
+        <span class="ds-model-label">Embedding</span>
+        <span class="ds-model-value" id="model-embed-active">—</span>
+      </div>
+      <div style="margin-top:var(--space-8)">
+        <span class="ds-model-label" style="display:block; margin-bottom:4px;">Available embeddings</span>
+        <div id="model-embed-list" class="ds-model-list"></div>
+      </div>
+    </div>
 
     <div class="ds-powered-by">
       <span class="ds-badge badge">LangChain</span>
@@ -507,8 +537,10 @@
     if (s.docMeta) {
       metaGrid.innerHTML = buildMetaRows(s.docMeta);
       showStatus(statusReady);
+      setActiveEmbedModel(s.docMeta.embed_model || null);
       enableChat();
     } else {
+      setActiveEmbedModel(null);
       disableChat();
     }
 
@@ -594,7 +626,9 @@
 
     try {
       const res  = await fetch(`/upload?session_id=${activeId}`, { method: 'POST', body: fd });
-      const data = await res.json();
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch { throw new Error(text || 'Upload failed.'); }
       if (!res.ok) throw new Error(data.detail || 'Upload failed.');
 
       metaGrid.innerHTML = buildMetaRows(data);
@@ -606,6 +640,7 @@
       sessions[activeId].messages = [];
 
       docName.textContent = data.name;
+      setActiveEmbedModel(data.embed_model);
       enableChat();
       renderMessages();
       renderSessionList();
@@ -625,7 +660,8 @@
   function buildMetaRows(data) {
     return row('File', data.name) + row('Pages', data.pages) +
            row('Characters', data.chars.toLocaleString()) +
-           row('Chunks', data.chunks) + row('Vectors', data.vectors);
+           row('Chunks', data.chunks) + row('Vectors', data.vectors) +
+           (data.embed_model ? row('Model', data.embed_model.replace('models/', '')) : '');
   }
 
   function row(k, v) {
@@ -756,7 +792,44 @@
   function nowTime() { return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
   function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
+  // ── Model info ────────────────────────────────────────────────────────────────
+  const modelLlm       = document.getElementById('model-llm');
+  const modelEmbedActive = document.getElementById('model-embed-active');
+  const modelEmbedList = document.getElementById('model-embed-list');
+
+  let availableEmbedModels = [];
+  let activeEmbedModel = null;
+
+  async function fetchModels() {
+    try {
+      const res = await fetch('/models');
+      const data = await res.json();
+      modelLlm.textContent = data.llm;
+      availableEmbedModels = data.embedding_models;
+      renderModelChips();
+    } catch { /* ignore */ }
+  }
+
+  function setActiveEmbedModel(model) {
+    activeEmbedModel = model;
+    modelEmbedActive.textContent = model ? model.replace('models/', '') : '—';
+    renderModelChips();
+  }
+
+  function renderModelChips() {
+    modelEmbedList.innerHTML = '';
+    availableEmbedModels.forEach(m => {
+      const chip = document.createElement('span');
+      const shortName = m.replace('models/', '');
+      const isActive = m === activeEmbedModel;
+      chip.className = `ds-model-chip${isActive ? ' is-active' : ''}`;
+      chip.innerHTML = `<span class="ds-model-chip-dot"></span>${escHtml(shortName)}`;
+      modelEmbedList.appendChild(chip);
+    });
+  }
+
   // ── Init ──────────────────────────────────────────────────────────────────────
+  fetchModels();
   createSession();
 </script>
 </body>
