@@ -34,12 +34,16 @@ A multi-session RAG (Retrieval-Augmented Generation) chatbot that answers questi
 
 ```
 ChatBotDoc/
-├── server.py           # FastAPI backend — sessions, upload, chat endpoints
+├── server.py                    # FastAPI backend — sessions, upload, chat endpoints
 ├── static/
-│   └── index.html      # Single-page frontend (no framework)
-├── chatbot.ipynb       # Jupyter notebook — original RAG prototype (6 steps)
-├── sample_doc.txt      # Sample document for testing (ACME employee handbook)
-└── requirements.txt    # Python dependencies
+│   └── index.html               # Single-page frontend (no framework)
+├── streamlit_app.py             # Streamlit version (deployed on Streamlit Cloud)
+├── app.py                       # Gradio version (alternative UI)
+├── chatbot.ipynb                # Jupyter notebook — original RAG prototype (6 steps)
+├── task1_gpo_baseline_rag.ipynb # Use Case 1: plain-text document Q&A (GPO report)
+├── task2_gep_structured_rag.ipynb # Use Case 2: structured 200-page report (World Bank GEP)
+├── sample_doc.txt               # Sample document for testing (ACME employee handbook)
+└── requirements.txt             # Python dependencies
 ```
 
 ---
