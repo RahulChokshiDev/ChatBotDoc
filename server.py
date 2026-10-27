@@ -1,18 +1,21 @@
 import os, time, shutil, tempfile, warnings, uuid
+from concurrent.futures import ThreadPoolExecutor
+import asyncio
 warnings.filterwarnings("ignore")
 
-os.environ["GOOGLE_API_KEY"] = "AQ.Ab8RN6KubRtdY-jkA8ESORSKdwxx3Hw5Oc62Y7ExRcQxhXNSIw"
+os.environ["GOOGLE_API_KEY"] = "AQ.Ab8RN6LZMzf8GK5UsxOgWaYetgIbmegtM13F8KVoUbNoCAiLOg"
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from pathlib import Path
 
 from langchain_community.document_loaders import TextLoader, PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import HumanMessage, AIMessage
@@ -53,8 +56,31 @@ def format_docs(docs):
     return "\n\n---\n\n".join(d.page_content for d in docs)
 
 
+# ── Local embeddings (no API calls, no tokens) ───────────────────────────────
+_EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
+
+# Load once at startup — subsequent calls are instant
+print("[embed] Loading local model…", flush=True)
+_embeddings = HuggingFaceEmbeddings(model_name=_EMBED_MODEL_NAME)
+print(f"[embed] ✓ {_EMBED_MODEL_NAME} loaded", flush=True)
+
+
 # ── FastAPI app ────────────────────────────────────────────────────────────────
 app = FastAPI()
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+
+@app.get("/models")
+def get_models():
+    return {
+        "llm": "gemini-3.6-flash",
+        "embedding_models": [_EMBED_MODEL_NAME],
+        "embedding_type": "local",
+    }
 
 
 # ── Session management ─────────────────────────────────────────────────────────
@@ -88,6 +114,26 @@ def delete_session(session_id: str):
 
 
 # ── Upload ─────────────────────────────────────────────────────────────────────
+_executor = ThreadPoolExecutor(max_workers=2)
+
+def _index_document(tmp_path: str, suffix: str, filename: str):
+    """Runs in a thread — loads, chunks, and embeds the document locally."""
+    loader   = PyPDFLoader(tmp_path) if suffix == ".pdf" else TextLoader(tmp_path, encoding="utf-8")
+    raw_docs = loader.load()
+    total_chars = sum(len(d.page_content) for d in raw_docs)
+
+    chunks = RecursiveCharacterTextSplitter(
+        chunk_size=2000, chunk_overlap=200,
+        separators=["\n\n", "\n", ". ", " ", ""],
+    ).split_documents(raw_docs)
+
+    print(f"[embed] {len(chunks)} chunks — embedding locally…", flush=True)
+    vector_store = FAISS.from_documents(chunks, _embeddings)
+    print(f"[embed] ✓ done", flush=True)
+
+    return raw_docs, total_chars, chunks, vector_store
+
+
 @app.post("/upload")
 async def upload(session_id: str = Query(...), file: UploadFile = File(...)):
     if session_id not in sessions:
@@ -102,42 +148,35 @@ async def upload(session_id: str = Query(...), file: UploadFile = File(...)):
         tmp_path = tmp.name
 
     try:
-        loader      = PyPDFLoader(tmp_path) if suffix == ".pdf" else TextLoader(tmp_path, encoding="utf-8")
-        raw_docs    = loader.load()
-        total_chars = sum(len(d.page_content) for d in raw_docs)
-
-        chunks = RecursiveCharacterTextSplitter(
-            chunk_size=800, chunk_overlap=150,
-            separators=["\n\n", "\n", ". ", " ", ""],
-        ).split_documents(raw_docs)
-
-        embeddings   = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-2")
-        vector_store = FAISS.from_documents(chunks, embeddings)
-        time.sleep(3)
-
-        retriever      = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 4})
-        rephrase_chain = contextualize_prompt | llm | StrOutputParser()
-        answer_chain   = qa_prompt | llm | StrOutputParser()
-
-        doc_meta = {
-            "name":    file.filename,
-            "pages":   len(raw_docs),
-            "chars":   total_chars,
-            "chunks":  len(chunks),
-            "vectors": vector_store.index.ntotal,
-        }
-
-        sessions[session_id].update({
-            "retriever":      retriever,
-            "rephrase_chain": rephrase_chain,
-            "answer_chain":   answer_chain,
-            "chat_history":   [],
-            "doc_meta":       doc_meta,
-        })
-        return doc_meta
-
+        # Run blocking embedding work in a thread so the event loop stays free
+        loop = asyncio.get_event_loop()
+        raw_docs, total_chars, chunks, vector_store = await loop.run_in_executor(
+            _executor, _index_document, tmp_path, suffix, file.filename
+        )
     finally:
         os.unlink(tmp_path)
+
+    retriever      = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 4})
+    rephrase_chain = contextualize_prompt | llm | StrOutputParser()
+    answer_chain   = qa_prompt | llm | StrOutputParser()
+
+    doc_meta = {
+        "name":    file.filename,
+        "pages":   len(raw_docs),
+        "chars":   total_chars,
+        "chunks":  len(chunks),
+        "vectors": vector_store.index.ntotal,
+        "embed_model": _EMBED_MODEL_NAME,
+    }
+
+    sessions[session_id].update({
+        "retriever":      retriever,
+        "rephrase_chain": rephrase_chain,
+        "answer_chain":   answer_chain,
+        "chat_history":   [],
+        "doc_meta":       doc_meta,
+    })
+    return doc_meta
 
 
 # ── Chat ───────────────────────────────────────────────────────────────────────

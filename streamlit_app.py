@@ -1,4 +1,4 @@
-import os, time, tempfile, warnings, uuid
+import os, re, time, tempfile, warnings, uuid
 warnings.filterwarnings("ignore")
 
 import streamlit as st
@@ -43,6 +43,44 @@ def get_llm():
 @st.cache_resource
 def get_embeddings():
     return GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-2")
+
+
+# ── Batch embedding (free tier: 100 req/min) ───────────────────────────────────
+# Send many texts per API call instead of one at a time.
+# 300 chunks → ~6 API calls (seconds) instead of 300 calls (minutes).
+_EMBED_BATCH_SIZE = 50   # texts per API call
+_BATCH_DELAY      = 1.5  # seconds between API calls
+
+
+def _embed_batch(texts: list, emb, max_retries: int = 8) -> list:
+    """Embed a list of texts in a single API call with retry on rate-limit."""
+    for attempt in range(max_retries):
+        try:
+            return emb.embed_documents(texts)
+        except Exception as e:
+            msg = str(e)
+            if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
+                m = re.search(r"retry in (\d+)", msg)
+                wait = int(m.group(1)) + 5 if m else 60
+                time.sleep(wait)
+            else:
+                raise
+    raise RuntimeError("Embedding failed after max retries.")
+
+
+def build_vector_store(chunks, emb) -> FAISS:
+    """Embed chunks in batches (many texts per API call) — much faster than one-at-a-time."""
+    texts   = [c.page_content for c in chunks]
+    metas   = [c.metadata     for c in chunks]
+    vectors = []
+
+    for i in range(0, len(texts), _EMBED_BATCH_SIZE):
+        batch = texts[i : i + _EMBED_BATCH_SIZE]
+        vectors.extend(_embed_batch(batch, emb))
+        if i + _EMBED_BATCH_SIZE < len(texts):
+            time.sleep(_BATCH_DELAY)
+
+    return FAISS.from_embeddings(list(zip(texts, vectors)), emb, metadatas=metas)
 
 
 @st.cache_resource
@@ -192,17 +230,19 @@ with st.sidebar:
                         tmp.write(uploaded_file.getvalue())
                         tmp_path = tmp.name
 
-                    loader   = PyPDFLoader(tmp_path) if suffix == ".pdf" else TextLoader(tmp_path, encoding="utf-8")
-                    raw_docs = loader.load()
-                    total_chars = sum(len(d.page_content) for d in raw_docs)
+                    try:
+                        loader   = PyPDFLoader(tmp_path) if suffix == ".pdf" else TextLoader(tmp_path, encoding="utf-8")
+                        raw_docs = loader.load()
+                        total_chars = sum(len(d.page_content) for d in raw_docs)
 
-                    chunks = RecursiveCharacterTextSplitter(
-                        chunk_size=800, chunk_overlap=150,
-                        separators=["\n\n", "\n", ". ", " ", ""],
-                    ).split_documents(raw_docs)
+                        chunks = RecursiveCharacterTextSplitter(
+                            chunk_size=2000, chunk_overlap=200,
+                            separators=["\n\n", "\n", ". ", " ", ""],
+                        ).split_documents(raw_docs)
 
-                    vector_store = FAISS.from_documents(chunks, get_embeddings())
-                    time.sleep(3)
+                        vector_store = build_vector_store(chunks, get_embeddings())
+                    finally:
+                        os.unlink(tmp_path)
 
                     llm = get_llm()
                     ctx_prompt, qa_prompt = get_prompts()
@@ -222,7 +262,6 @@ with st.sidebar:
                             "vectors": vector_store.index.ntotal,
                         },
                     })
-                    os.unlink(tmp_path)
                     st.rerun()
 
                 except Exception as e:
